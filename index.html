@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cursors Multiplayer + Velocidade Maximizada</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        body {
+            margin: 0; padding: 0; background-color: #000; overflow: hidden;
+            width: 100vw; height: 100vh; font-family: 'Press Start 2P', monospace;
+            user-select: none; touch-action: none; cursor: none;
+        }
+        canvas {
+            display: block; width: 100vw; height: 100vh; background-color: #000;
+        }
+        #hud {
+            position: absolute; top: 15px; left: 15px; z-index: 10;
+            color: #fff; font-size: 8px; text-shadow: 2px 2px 0 #000;
+            background: rgba(0, 0, 0, 0.7); border: 2px solid #444; padding: 8px 12px;
+            pointer-events: none; box-shadow: 3px 3px 0 rgba(0,0,0,0.8);
+        }
+        
+        #topRightBox {
+            position: absolute; top: 15px; right: 15px; z-index: 20;
+            background: rgba(0, 0, 0, 0.85); border: 2px solid #555; padding: 8px 10px;
+            box-shadow: 3px 3px 0 rgba(0,0,0,0.8); display: flex; gap: 6px; align-items: center;
+        }
+        #nameInput {
+            background: #111; border: 2px solid #777; color: #f1c40f;
+            font-family: 'Press Start 2P', monospace; font-size: 7px;
+            padding: 5px; width: 90px; outline: none; text-transform: uppercase;
+        }
+        #nameInput:focus { border-color: #2ecc71; }
+        
+        .top-btn {
+            background: #2980b9; color: #fff; border: 2px solid #fff;
+            font-family: 'Press Start 2P', monospace; font-size: 6px;
+            padding: 6px 8px; cursor: pointer; text-transform: uppercase;
+            box-shadow: 2px 2px 0 #000; transition: transform 0.1s;
+        }
+        .top-btn:active { transform: translate(2px, 2px); }
+
+        #videoContainer {
+            position: absolute; bottom: 75px; left: 15px; z-index: 20;
+            display: flex; gap: 6px; pointer-events: none; flex-wrap: wrap; max-width: 350px;
+        }
+        #videoContainer video {
+            width: 70px; height: 70px; object-fit: cover; border: 2px solid #fff;
+            background: #111; box-shadow: 3px 3px 0 #000;
+        }
+
+        #chatLog {
+            position: absolute; top: 65px; left: 15px; z-index: 10;
+            display: flex; flex-direction: column; gap: 5px; pointer-events: none;
+            max-width: 300px;
+        }
+        .roblox-msg {
+            background: rgba(0, 0, 0, 0.75); border-left: 3px solid #fff;
+            padding: 5px 8px; font-size: 7px; color: #fff; text-shadow: 1px 1px 0 #000;
+            box-shadow: 2px 2px 0 rgba(0,0,0,0.8); animation: fadeIn 0.2s ease;
+            word-break: break-word;
+        }
+        #chatInputContainer {
+            position: absolute; bottom: 15px; left: 15px; z-index: 20;
+            display: flex; gap: 6px; background: rgba(0, 0, 0, 0.85);
+            border: 2px solid #555; padding: 6px; box-shadow: 3px 3px 0 rgba(0,0,0,0.8);
+        }
+        #chatInput {
+            background: #111; border: 2px solid #777; color: #f1c40f;
+            font-family: 'Press Start 2P', monospace; font-size: 7px;
+            padding: 6px; width: 220px; outline: none;
+        }
+        #chatInput:focus { border-color: #2ecc71; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+
+        @media (max-width: 768px) {
+            #topRightBox { top: 10px; right: 10px; padding: 5px; gap: 4px; }
+            #nameInput { width: 70px; font-size: 6px; padding: 4px; }
+            .top-btn { font-size: 5px; padding: 5px 6px; }
+            #chatInputContainer { bottom: 10px; left: 10px; right: 10px; width: auto; }
+            #chatInput { width: 100%; }
+            #videoContainer { bottom: 60px; left: 10px; }
+            #chatLog { top: 55px; left: 10px; max-width: 240px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="hud">ONLINE: <span id="onlineCount">1</span> | CLICKS: <span id="clickCount">0</span> | <span id="connStatus" style="color: #f1c40f;">CONECTANDO...</span></div>
+    
+    <div id="topRightBox">
+        <input type="text" id="nameInput" value="Player123" maxlength="12">
+        <button id="voiceBtn" class="top-btn" onclick="toggleVoiceChat()">🎙️</button>
+        <button id="videoBtn" class="top-btn" onclick="toggleVideoChat()" style="background-color: #8e44ad;">📹</button>
+    </div>
+
+    <div id="videoContainer"></div>
+
+    <div id="chatLog"></div>
+
+    <div id="chatInputContainer">
+        <input type="text" id="chatInput" placeholder="Toque aqui para falar..." maxlength="60">
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        const getRandomColor = () => `hsl(${Math.floor(Math.random() * 360)}, ${Math.floor(Math.random() * 40) + 60}%, ${Math.floor(Math.random() * 30) + 55}%)`;
+
+        let myId = 'user_' + Math.floor(Math.random() * 999999);
+        let myName = 'Player' + Math.floor(Math.random() * 900 + 100);
+        let myColor = getRandomColor();
+        let totalClicks = 0;
+        
+        document.getElementById('nameInput').value = myName;
+
+        document.getElementById('nameInput').addEventListener('input', e => {
+            let val = e.target.value.trim();
+            if (val !== "") {
+                myName = val;
+                sendPosition();
+            }
+        });
+
+        let remotePlayers = {};
+        let mqttClient = null;
+        let salaId = 'cursor_global_clicks_sync_v16';
+
+        let particles = [];
+        let clickRipples = [];
+
+        function spawnParticles(x, y, color, count, speed, sizeBase=2) {
+            for (let i = 0; i < count; i++) {
+                let angle = Math.random() * Math.PI * 2;
+                let s = Math.random() * speed;
+                particles.push({
+                    x: x, y: y,
+                    vx: Math.cos(angle) * s,
+                    vy: Math.sin(angle) * s,
+                    life: 1.0,
+                    maxLife: 0.4 + Math.random() * 0.4,
+                    size: sizeBase + Math.random() * 2,
+                    color: color
+                });
+            }
+        }
+
+        function triggerClickEffect(x, y, increment = true) {
+            spawnParticles(x, y, '#ffffff', 25, 200, 2);
+            clickRipples.push({ x: x, y: y, radius: 4, maxRadius: 35, alpha: 1.0 });
+            if (increment) {
+                totalClicks++;
+            }
+        }
+
+        window.addEventListener('mousedown', e => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+            triggerClickEffect(e.clientX, e.clientY, true);
+            if (mqttClient && mqttClient.connected) {
+                mqttClient.publish(salaId, JSON.stringify({ type: 'click_effect', id: myId, x: e.clientX, y: e.clientY }));
+            }
+        });
+
+        window.addEventListener('touchstart', e => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+            if (e.touches.length > 0) {
+                let tx = e.touches[0].clientX;
+                let ty = e.touches[0].clientY;
+                triggerClickEffect(tx, ty, true);
+                if (mqttClient && mqttClient.connected) {
+                    mqttClient.publish(salaId, JSON.stringify({ type: 'click_effect', id: myId, x: tx, y: ty }));
+                }
+            }
+        }, { passive: true });
+
+        let localStream = null;
+        let localVideoStream = null;
+        let peerConnections = {};
+        let isVoiceActive = false;
+        let videoMode = 0; 
+
+        function toggleVoiceChat() {
+            let btn = document.getElementById('voiceBtn');
+            if (!isVoiceActive) {
+                navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(stream => {
+                    localStream = stream;
+                    isVoiceActive = true;
+                    btn.innerText = "🎙️ON";
+                    btn.style.backgroundColor = "#2ecc71";
+                    
+                    for (let id in remotePlayers) {
+                        if (myId < id) createPeerConnection(id, true);
+                    }
+                }).catch(err => alert("Permissão de microfone negada."));
+            } else {
+                stopVoiceChat();
+            }
+        }
+
+        function stopVoiceChat() {
+            if (localStream) {
+                localStream.getTracks().forEach(t => t.stop());
+                localStream = null;
+            }
+            isVoiceActive = false;
+            let btn = document.getElementById('voiceBtn');
+            btn.innerText = "🎙️";
+            btn.style.backgroundColor = "#2980b9";
+
+            for (let id in peerConnections) {
+                let pc = peerConnections[id];
+                if (pc) {
+                    let senders = pc.getSenders();
+                    senders.forEach(s => { if (s.track && s.track.kind === 'audio') pc.removeTrack(s); });
+                }
+            }
+            document.querySelectorAll('[id^="remoteAudio_"]').forEach(el => el.remove());
+        }
+
+        async function toggleVideoChat() {
+            videoMode = (videoMode + 1) % 3;
+            let btn = document.getElementById('videoBtn');
+            if (videoMode === 0) {
+                if (localVideoStream) {
+                    localVideoStream.getTracks().forEach(t => t.stop());
+                    localVideoStream = null;
+                }
+                let localVid = document.getElementById('localVideo');
+                if (localVid) localVid.remove();
+                btn.innerText = "📹";
+                btn.style.backgroundColor = "#8e44ad";
+
+                for (let id in peerConnections) {
+                    let pc = peerConnections[id];
+                    let senders = pc.getSenders();
+                    senders.forEach(s => { if (s.track && s.track.kind === 'video') pc.removeTrack(s); });
+                    createPeerConnection(id, true);
+                }
+            } else {
+                let facing = videoMode === 1 ? "user" : "environment";
+                let modeText = videoMode === 1 ? "📹F" : "📹T";
+                btn.innerText = modeText;
+                btn.style.backgroundColor = "#2ecc71";
+                try {
+                    if (localVideoStream) {
+                        localVideoStream.getTracks().forEach(t => t.stop());
+                    }
+                    localVideoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing } });
+                    let localVid = document.getElementById('localVideo');
+                    if (!localVid) {
+                        localVid = document.createElement('video');
+                        localVid.id = 'localVideo';
+                        localVid.autoplay = true;
+                        localVid.muted = true;
+                        localVid.playsInline = true;
+                        document.getElementById('videoContainer').appendChild(localVid);
+                    }
+                    localVid.srcObject = localVideoStream;
+                    let videoTrack = localVideoStream.getVideoTracks()[0];
+
+                    for (let id in peerConnections) {
+                        let pc = peerConnections[id];
+                        let sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+                        if (sender) {
+                            sender.replaceTrack(videoTrack);
+                        } else {
+                            pc.addTrack(videoTrack, localVideoStream);
+                            createPeerConnection(id, true);
+                        }
+                    }
+                    for (let id in remotePlayers) {
+                        if (myId < id && !peerConnections[id]) createPeerConnection(id, true);
+                    }
+                } catch (err) {
+                    alert("Câmera indisponível.");
+                    videoMode = 0;
+                    btn.innerText = "📹";
+                    btn.style.backgroundColor = "#8e44ad";
+                }
+            }
+        }
+
+        function getOrCreatePeerConnection(remoteId) {
+            if (peerConnections[remoteId]) return peerConnections[remoteId];
+            let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            
+            if (localStream) {
+                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+            }
+            if (localVideoStream) {
+                localVideoStream.getTracks().forEach(track => pc.addTrack(track, localVideoStream));
+            }
+
+            pc.oniceconnectionstatechange = () => {
+                if (['failed', 'disconnected', 'closed'].includes(pc.iceConnectionState)) {
+                    pc.close();
+                    delete peerConnections[remoteId];
+                    let audioEl = document.getElementById('remoteAudio_' + remoteId);
+                    if (audioEl) audioEl.remove();
+                    let videoEl = document.getElementById('remoteVideo_' + remoteId);
+                    if (videoEl) videoEl.remove();
+
+                    if ((isVoiceActive || videoMode > 0) && myId < remoteId) {
+                        setTimeout(() => { createPeerConnection(remoteId, true); }, 1000);
+                    }
+                }
+            };
+
+            pc.onicecandidate = event => {
+                if (event.candidate && mqttClient && mqttClient.connected) {
+                    mqttClient.publish(salaId, JSON.stringify({ type: 'webrtc_candidate', id: myId, targetId: remoteId, candidate: event.candidate }));
+                }
+            };
+
+            pc.ontrack = event => {
+                let isVideo = event.track.kind === 'video';
+                let mediaId = (isVideo ? 'remoteVideo_' : 'remoteAudio_') + remoteId;
+                let mediaEl = document.getElementById(mediaId);
+                if (!mediaEl) {
+                    mediaEl = document.createElement(isVideo ? 'video' : 'audio');
+                    mediaEl.id = mediaId;
+                    mediaEl.autoplay = true;
+                    if (isVideo) {
+                        mediaEl.playsInline = true;
+                        document.getElementById('videoContainer').appendChild(mediaEl);
+                    } else {
+                        document.body.appendChild(mediaEl);
+                    }
+                }
+                mediaEl.srcObject = event.streams[0];
+                mediaEl.play().catch(e => {});
+            };
+
+            peerConnections[remoteId] = pc;
+            return pc;
+        }
+
+        function createPeerConnection(remoteId, isInitiator) {
+            let pc = getOrCreatePeerConnection(remoteId);
+            if (isInitiator) {
+                pc.createOffer().then(offer => pc.setLocalDescription(offer)).then(() => {
+                    if (mqttClient && mqttClient.connected) {
+                        mqttClient.publish(salaId, JSON.stringify({ type: 'webrtc_offer', id: myId, targetId: remoteId, offer: pc.localDescription }));
+                    }
+                }).catch(e => {});
+            }
+        }
+
+        let mouse = { x: canvas.width / 2, y: canvas.height / 2, targetX: canvas.width / 2, targetY: canvas.height / 2 };
+        let localTrail = [];
+        let localChatText = "";
+        let localChatTimer = 0;
+
+        window.addEventListener('mousemove', e => {
+            mouse.targetX = e.clientX;
+            mouse.targetY = e.clientY;
+        });
+
+        window.addEventListener('touchstart', e => {
+            if (e.touches.length > 0) {
+                mouse.targetX = e.touches[0].clientX;
+                mouse.targetY = e.touches[0].clientY;
+            }
+        }, { passive: true });
+
+        window.addEventListener('touchmove', e => {
+            if (e.touches.length > 0) {
+                mouse.targetX = e.touches[0].clientX;
+                mouse.targetY = e.touches[0].clientY;
+            }
+        }, { passive: true });
+
+        const chatInput = document.getElementById('chatInput');
+        window.addEventListener('keydown', e => {
+            if (e.key === ';' || e.code === 'Semicolon') {
+                if (document.activeElement !== chatInput && document.activeElement !== document.getElementById('nameInput')) {
+                    chatInput.focus();
+                    e.preventDefault();
+                }
+            } else if (e.key === 'Enter') {
+                if (document.activeElement === chatInput) {
+                    let text = chatInput.value.trim();
+                    if (text !== '') {
+                        sendChatMessage(text);
+                        chatInput.value = '';
+                    }
+                    chatInput.blur();
+                } else if (document.activeElement !== document.getElementById('nameInput')) {
+                    chatInput.focus();
+                    e.preventDefault();
+                }
+            }
+        });
+
+        function addRobloxChatLine(name, text, color) {
+            let chatLog = document.getElementById('chatLog');
+            let div = document.createElement('div');
+            div.className = 'roblox-msg';
+            div.innerHTML = `<span style="color: ${color};">${name}:</span> <span style="color: #ffffff;">${text}</span>`;
+            chatLog.appendChild(div);
+
+            setTimeout(() => {
+                div.style.transition = 'opacity 0.5s ease';
+                div.style.opacity = '0';
+                setTimeout(() => div.remove(), 500);
+            }, 5000);
+        }
+
+        function sendChatMessage(text) {
+            localChatText = text;
+            localChatTimer = 8.0;
+            addRobloxChatLine(myName, text, myColor);
+
+            if (mqttClient && mqttClient.connected) {
+                mqttClient.publish(salaId, JSON.stringify({
+                    type: 'chat', id: myId, name: myName, text: text, color: myColor
+                }), { qos: 0 });
+            }
+        }
+
+        function connectMQTT() {
+            try {
+                mqttClient = mqtt.connect('wss://broker.hivemq.com:8884/mqtt', { clientId: myId + '_' + Date.now(), clean: true, connectTimeout: 5000 });
+                
+                mqttClient.on('connect', () => {
+                    document.getElementById('connStatus').innerText = "CONECTADO";
+                    document.getElementById('connStatus').style.color = "#2ecc71";
+                    mqttClient.subscribe(salaId, { qos: 0 });
+                });
+
+                mqttClient.on('error', () => {
+                    document.getElementById('connStatus').innerText = "ERRO";
+                    document.getElementById('connStatus').style.color = "#e74c3c";
+                });
+
+                mqttClient.on('offline', () => {
+                    document.getElementById('connStatus').innerText = "OFFLINE";
+                    document.getElementById('connStatus').style.color = "#e74c3c";
+                });
+
+                mqttClient.on('message', (topic, message) => {
+                    try {
+                        let data = JSON.parse(message.toString());
+                        if (data.id === myId) return;
+
+                        if (data.type === 'cursor') {
+                            if (data.clicks !== undefined && data.clicks > totalClicks) {
+                                totalClicks = data.clicks;
+                            }
+
+                            if (!remotePlayers[data.id]) {
+                                remotePlayers[data.id] = {
+                                    x: data.x, y: data.y, targetX: data.x, targetY: data.y,
+                                    color: data.color || getRandomColor(), name: data.name || 'Anônimo',
+                                    chatText: "", chatTimer: 0, lastUpdate: Date.now(), trail: []
+                                };
+                                if ((isVoiceActive || videoMode > 0) && myId < data.id) {
+                                    createPeerConnection(data.id, true);
+                                }
+                            } else {
+                                let rp = remotePlayers[data.id];
+                                rp.targetX = data.x;
+                                rp.targetY = data.y;
+                                rp.color = data.color || rp.color;
+                                rp.name = data.name || rp.name;
+                                rp.lastUpdate = Date.now();
+                            }
+                        } else if (data.type === 'chat') {
+                            if (remotePlayers[data.id]) {
+                                remotePlayers[data.id].chatText = data.text;
+                                remotePlayers[data.id].chatTimer = 8.0;
+                                remotePlayers[data.id].color = data.color || remotePlayers[data.id].color;
+                            }
+                            addRobloxChatLine(data.name || 'Anônimo', data.text, data.color || getRandomColor());
+                        } else if (data.type === 'click_effect') {
+                            triggerClickEffect(data.x, data.y, true);
+                        } else if (data.type === 'webrtc_offer' && data.targetId === myId) {
+                            let pc = getOrCreatePeerConnection(data.id);
+                            pc.setRemoteDescription(new RTCSessionDescription(data.offer))
+                              .then(() => pc.createAnswer())
+                              .then(answer => pc.setLocalDescription(answer))
+                              .then(() => {
+                                  if (mqttClient && mqttClient.connected) {
+                                      mqttClient.publish(salaId, JSON.stringify({ type: 'webrtc_answer', id: myId, targetId: data.id, answer: pc.localDescription }));
+                                  }
+                              }).catch(e => {});
+                        } else if (data.type === 'webrtc_answer' && data.targetId === myId) {
+                            let pc = peerConnections[data.id];
+                            if (pc) pc.setRemoteDescription(new RTCSessionDescription(data.answer)).catch(e => {});
+                        } else if (data.type === 'webrtc_candidate' && data.targetId === myId) {
+                            let pc = peerConnections[data.id];
+                            if (pc && data.candidate) pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => {});
+                        }
+                    } catch (e) {}
+                });
+            } catch (e) {}
+        }
+
+        connectMQTT();
+
+        function sendPosition() {
+            // Sem nenhum limite de tempo: envia instantaneamente a cada frame
+            if (mqttClient && mqttClient.connected) {
+                mqttClient.publish(salaId, JSON.stringify({
+                    type: 'cursor', id: myId, x: mouse.x, y: mouse.y, color: myColor, name: myName, clicks: totalClicks
+                }), { qos: 0 });
+            }
+        }
+
+        function update(dt) {
+            mouse.x += (mouse.targetX - mouse.x) * (1 - Math.exp(-60 * dt));
+            mouse.y += (mouse.targetY - mouse.y) * (1 - Math.exp(-60 * dt));
+
+            sendPosition();
+
+            if (localChatTimer > 0) localChatTimer -= dt;
+
+            localTrail.push({ x: mouse.x, y: mouse.y });
+            if (localTrail.length > 8) localTrail.shift();
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.life -= dt / p.maxLife;
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+
+            for (let i = clickRipples.length - 1; i >= 0; i--) {
+                let r = clickRipples[i];
+                r.radius += (r.maxRadius - r.radius) * (1 - Math.exp(-15 * dt));
+                r.alpha -= dt * 3.0;
+                if (r.alpha <= 0) clickRipples.splice(i, 1);
+            }
+
+            let now = Date.now();
+            let totalRemote = 0;
+            for (let id in remotePlayers) {
+                let rp = remotePlayers[id];
+                if (now - rp.lastUpdate > 4000) {
+                    delete remotePlayers[id];
+                    let audioEl = document.getElementById('remoteAudio_' + id);
+                    if (audioEl) audioEl.remove();
+                    let videoEl = document.getElementById('remoteVideo_' + id);
+                    if (videoEl) videoEl.remove();
+                } else {
+                    totalRemote++;
+                    rp.x += (rp.targetX - rp.x) * (1 - Math.exp(-40 * dt));
+                    rp.y += (rp.targetY - rp.y) * (1 - Math.exp(-40 * dt));
+
+                    if (rp.chatTimer > 0) rp.chatTimer -= dt;
+
+                    if (!rp.trail) rp.trail = [];
+                    rp.trail.push({ x: rp.x, y: rp.y });
+                    if (rp.trail.length > 8) rp.trail.shift();
+                }
+            }
+
+            document.getElementById('onlineCount').innerText = 1 + totalRemote;
+            document.getElementById('clickCount').innerText = totalClicks;
+        }
+
+        function drawWhiteDot(ctx, x, y) {
+            ctx.save();
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawChatBubble(ctx, x, y, name, text, color) {
+            ctx.save();
+            ctx.font = '7px "Press Start 2P", monospace';
+            let displayText = `${name}: ${text}`;
+            let metrics = ctx.measureText(displayText);
+            let w = metrics.width + 14;
+            let h = 22;
+            let bx = x - w / 2;
+            let by = y - 32;
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.fillRect(bx, by, w, h);
+            ctx.strokeRect(bx, by, w, h);
+
+            ctx.textAlign = 'left';
+            let startX = bx + 6;
+            let startY = by + 14;
+            
+            ctx.fillStyle = color;
+            ctx.fillText(name + ": ", startX, startY);
+            let nameWidth = ctx.measureText(name + ": ").width;
+            
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(text, startX + nameWidth, startY);
+
+            ctx.restore();
+        }
+
+        function draw() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (let r of clickRipples) {
+                ctx.save();
+                ctx.globalAlpha = Math.max(0, r.alpha);
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            for (let p of particles) {
+                ctx.save();
+                ctx.globalAlpha = Math.max(0, p.life);
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, p.y, p.size, p.size);
+                ctx.restore();
+            }
+
+            for (let id in remotePlayers) {
+                let rp = remotePlayers[id];
+                if (rp.trail) {
+                    for (let i = 0; i < rp.trail.length; i++) {
+                        let t = rp.trail[i];
+                        let alpha = ((i + 1) / rp.trail.length) * 0.25;
+                        ctx.save();
+                        ctx.globalAlpha = alpha;
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(t.x - 2, t.y - 2, 4, 4);
+                        ctx.restore();
+                    }
+                }
+
+                drawWhiteDot(ctx, rp.x, rp.y);
+
+                if (rp.chatTimer > 0 && rp.chatText) {
+                    drawChatBubble(ctx, rp.x, rp.y, rp.name || 'Anônimo', rp.chatText, rp.color);
+                }
+            }
+
+            for (let i = 0; i < localTrail.length; i++) {
+                let t = localTrail[i];
+                let alpha = ((i + 1) / localTrail.length) * 0.3;
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(t.x - 2, t.y - 2, 4, 4);
+                ctx.restore();
+            }
+
+            drawWhiteDot(ctx, mouse.x, mouse.y);
+
+            if (localChatTimer > 0 && localChatText) {
+                drawChatBubble(ctx, mouse.x, mouse.y, myName, localChatText, myColor);
+            }
+        }
+
+        let lastTime = performance.now();
+        function loop(ts) {
+            let dt = (ts - lastTime) / 1000;
+            if (dt > 0.1) dt = 0.1;
+            lastTime = ts;
+
+            update(dt);
+            draw();
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
